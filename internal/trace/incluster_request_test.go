@@ -68,6 +68,8 @@ func TestProtocolForPort(t *testing.T) {
 		{name: "Redis number", port: PortMap{Port: 6379}, want: "tcp"},
 		{name: "Postgres", port: PortMap{Port: 5432}, want: "tcp"},
 		{name: "Kafka appProtocol", port: PortMap{Port: 19092, AppProtocol: "kafka"}, want: "tcp"},
+		{name: "UDP is unsupported", port: PortMap{Port: 53, Protocol: "UDP"}, want: ""},
+		{name: "SCTP is unsupported", port: PortMap{Port: 3868, Protocol: "SCTP"}, want: ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -215,6 +215,7 @@ func recountCoverage(t *Trace) {
 	// "host:port"); the not-tested route below carries the same host, so the
 	// two key spaces line up and the absorption actually fires.
 	skipRowsByHost := map[string]int{}
+	skipRowsByPort := map[string]int{}
 	for _, s := range t.NotTested {
 		// Benign skips (sampled identical pods, duplicate default backend) lose no
 		// coverage by design - counting them would downgrade a fully-tested route
@@ -226,8 +227,12 @@ func recountCoverage(t *Trace) {
 		if h := routeHostKey(s.Route); h != "" {
 			skipRowsByHost[h]++
 		}
+		if p := portKey(s.Route); p != "" {
+			skipRowsByPort[p]++
+		}
 	}
 	consumedHosts := map[string]bool{}
+	consumedPorts := map[string]bool{}
 	cov := Coverage{}
 	for _, r := range t.Routes {
 		switch r.Outcome {
@@ -243,10 +248,20 @@ func recountCoverage(t *Trace) {
 			// route on a host consumes ALL of that host's raw skip rows (they
 			// describe the same untested front door); subsequent sibling routes on
 			// the host just count themselves.
-			if h := routeResultHostKey(r); h != "" && !consumedHosts[h] {
-				if n := skipRowsByHost[h]; n > 0 {
-					skipped -= n
-					consumedHosts[h] = true
+			if t.Subject.Kind != "Service" {
+				if h := routeResultHostKey(r); h != "" && !consumedHosts[h] {
+					if n := skipRowsByHost[h]; n > 0 {
+						skipped -= n
+						consumedHosts[h] = true
+					}
+				}
+			}
+			if t.Subject.Kind == "Service" {
+				if p := portKey(r.Target); p != "" && !consumedPorts[p] {
+					if n := skipRowsByPort[p]; n > 0 {
+						skipped -= n
+						consumedPorts[p] = true
+					}
 				}
 			}
 			skipped++
@@ -317,6 +332,7 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	// would count the route as Passed AND its same-host skip row as Skipped. Drop the
 	// vantage rows the live pass resolved before recounting.
 	resolvedHosts := map[string]bool{}
+	resolvedPorts := map[string]bool{}
 	for i := range t.Routes {
 		r := t.Routes[i]
 		if r.Confidence != ConfidenceReal {
@@ -328,11 +344,17 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		if h := routeResultHostKey(r); h != "" {
 			resolvedHosts[h] = true
 		}
+		if t.Subject.Kind == "Service" {
+			if p := portKey(r.Target); p != "" {
+				resolvedPorts[p] = true
+			}
+		}
 	}
-	if len(resolvedHosts) > 0 {
+	if len(resolvedHosts) > 0 || len(resolvedPorts) > 0 {
 		kept := t.NotTested[:0]
 		for _, s := range t.NotTested {
-			if s.ReasonClass == SkipClassVantage && resolvedHosts[routeHostKey(s.Route)] {
+			if s.ReasonClass == SkipClassVantage &&
+				(resolvedHosts[routeHostKey(s.Route)] || resolvedPorts[portKey(s.Route)]) {
 				continue
 			}
 			kept = append(kept, s)
@@ -1502,8 +1524,13 @@ func isNameByte(b byte) bool {
 func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult, bool) {
 	var real, indirect []probe.Result
 	var localization []ProbeFact
+	var vantageSkip *probe.Result
 	for _, p := range probes {
 		if p.Skipped {
+			if vantageSkip == nil && skipClassOf(p) == SkipClassVantage {
+				copy := p
+				vantageSkip = &copy
+			}
 			continue
 		}
 		if p.Path == probe.PathAPIServer {
@@ -1516,6 +1543,12 @@ func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult
 		}
 	}
 	if len(real) == 0 && len(indirect) == 0 {
+		if vantageSkip != nil {
+			return RouteResult{
+				Route: routeID, Target: target, Outcome: OutcomeNotTested,
+				Evidence: vantageSkip.Reason, Command: vantageSkip.Command,
+			}, true
+		}
 		return RouteResult{}, false
 	}
 	r := RouteResult{Route: routeID, Target: target, Localization: localization}
@@ -1821,6 +1854,9 @@ func mergePorts(existing, add []int32) []int32 {
 func attachInClusterRequest(routes []RouteResult, host, path string, cfg *HopConfig) {
 	for i := range routes {
 		req := guessInClusterRequest(host, path, portFromTarget(routes[i].Target, cfg))
+		if req.Protocol == "" {
+			continue
+		}
 		routes[i].InClusterRequest = &req
 	}
 }
@@ -1840,6 +1876,9 @@ func guessInClusterRequest(host, path string, port PortMap) ProbeRequest {
 }
 
 func protocolForPort(port PortMap) string {
+	if protocol := strings.ToUpper(strings.TrimSpace(port.Protocol)); protocol == "UDP" || protocol == "SCTP" {
+		return ""
+	}
 	if !isHTTPProbablePort(port.Name, port.AppProtocol, port.Port) {
 		return "tcp"
 	}

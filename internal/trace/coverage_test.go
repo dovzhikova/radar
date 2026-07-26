@@ -1294,6 +1294,69 @@ func TestRoutesByPort_OwnHealthyStillVerifies(t *testing.T) {
 	}
 }
 
+func TestComputeCoverage_NonHTTPServiceBuildsInClusterCandidate(t *testing.T) {
+	serviceSkip := probe.SkippedCmd(
+		probe.LayerHTTP,
+		"port 6379",
+		probe.VantageLocal,
+		"Port 6379 is a well-known non-HTTP port. Run Radar from in-cluster to verify TCP reachability.",
+		"kubectl port-forward svc/valkey 6379:6379",
+	)
+	serviceSkip.Port = 6379
+	serviceSkip.SkipClass = SkipClassVantage
+	podSkip := serviceSkip
+	podSkip.Target = "valkey-abc port 6379"
+
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Namespace: "default", Name: "valkey"},
+		Downstream: []Hop{
+			{
+				Resource: ResourceRef{Kind: "Service", Namespace: "default", Name: "valkey"},
+				Config:   &HopConfig{Ports: []PortMap{{Port: 6379, Protocol: "TCP"}}},
+				Probes:   []probe.Result{serviceSkip},
+			},
+			{
+				Resource: ResourceRef{Kind: "Pods", Namespace: "default"},
+				Probes:   []probe.Result{podSkip},
+			},
+		},
+	}
+
+	computeCoverage(tr)
+
+	if len(tr.Routes) != 1 {
+		t.Fatalf("Routes = %+v, want one not-tested Service route", tr.Routes)
+	}
+	route := tr.Routes[0]
+	if route.Outcome != OutcomeNotTested || route.Target != "valkey:6379" {
+		t.Fatalf("route = %+v, want valkey:6379 not-tested", route)
+	}
+	if route.InClusterRequest == nil || route.InClusterRequest.Protocol != "tcp" {
+		t.Fatalf("in-cluster request = %+v, want TCP candidate", route.InClusterRequest)
+	}
+	if tr.Coverage == nil || tr.Coverage.Skipped != 1 {
+		t.Fatalf("Coverage = %+v, want one intended Service-port gap", tr.Coverage)
+	}
+
+	ApplyInClusterResults(tr, map[string][]probe.Result{
+		InClusterResultKey(route.Route, route.Target, route.TargetNamespace): {{
+			Layer: probe.LayerTCP, Target: "10.96.0.10:6379", Port: 6379,
+			Path: probe.PathData, Vantage: probe.VantageInCluster,
+			OK: true, Tone: probe.ToneHealthy,
+		}},
+	})
+
+	if tr.Routes[0].Outcome != OutcomeReached || tr.Routes[0].Confidence != ConfidenceReal {
+		t.Fatalf("folded route = %+v, want reached with real confidence", tr.Routes[0])
+	}
+	if tr.Coverage == nil || tr.Coverage.Passed != 1 || tr.Coverage.Skipped != 0 {
+		t.Fatalf("folded Coverage = %+v, want one pass and no stale skips", tr.Coverage)
+	}
+	if len(tr.NotTested) != 0 {
+		t.Fatalf("NotTested = %+v, want resolved port skips removed", tr.NotTested)
+	}
+}
+
 // Defect 4: a single-host Ingress route's label is path-only ("/api"), so
 // routeHostKey returns "" and a NotTested route both counts its own skipped
 // transport probe (under the host key) AND itself - inflating Coverage.Skipped.
@@ -1320,6 +1383,25 @@ func TestRecountCoverage_SingleHostNotTestedNoDoubleCount(t *testing.T) {
 	}
 	if tr.Coverage.Skipped != 1 {
 		t.Errorf("Coverage.Skipped = %d, want 1 - the not-tested route and its skip row are the SAME gap, not two", tr.Coverage.Skipped)
+	}
+}
+
+func TestRecountCoverage_ServiceSkipDedupDoesNotSubtractTwice(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Namespace: "prod", Name: "api"},
+		Routes: []RouteResult{{
+			Route: "api", Target: "api:443", Outcome: OutcomeNotTested,
+			InClusterRequest: &ProbeRequest{Protocol: "https", Scheme: "https", Host: "api", Path: "/"},
+		}},
+		NotTested: []RouteSkip{{
+			Route: "api:443", Reason: "run Radar in-cluster", ReasonClass: SkipClassVantage,
+		}},
+	}
+
+	recountCoverage(tr)
+
+	if tr.Coverage == nil || tr.Coverage.Skipped != 1 {
+		t.Fatalf("Coverage = %+v, want one Service-port gap", tr.Coverage)
 	}
 }
 
