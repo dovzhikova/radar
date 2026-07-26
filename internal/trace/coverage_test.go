@@ -1100,7 +1100,7 @@ func TestApplyInClusterResults_UpgradesIndirectToReal(t *testing.T) {
 		Subject: ResourceRef{Kind: "Service", Namespace: "prod", Name: "api"},
 		Routes: []RouteResult{{
 			Route: "api", Target: "api:80", Outcome: OutcomeReached, Confidence: ConfidenceIndirect,
-			Evidence: "HTTP 404 · reached via proxy", InClusterRequest: &ProbeRequest{Scheme: "http", Path: "/"},
+			Evidence: "HTTP 404 · reached via proxy", InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Path: "/"},
 		}},
 		Coverage: &Coverage{Tested: 1, Passed: 1},
 	}
@@ -1130,7 +1130,7 @@ func TestApplyInClusterResults_LeavesBenignUntouched(t *testing.T) {
 	tr := &Trace{
 		Routes: []RouteResult{{
 			Route: "api", Target: "api:80", Outcome: OutcomeUnreachable, Benign: true,
-			InClusterRequest: &ProbeRequest{Scheme: "http", Path: "/"},
+			InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Path: "/"},
 		}},
 		Coverage: &Coverage{Tested: 1, Failed: 1},
 	}
@@ -1268,7 +1268,7 @@ func TestRoutesByPort_SharedFrontDoorDoesNotVerifyPort(t *testing.T) {
 	skipped := probe.Skipped(probe.LayerHTTP, "port 9090", probe.VantageLocal, "non-HTTP port - can't verify from here")
 	skipped.Port = 9090
 	probes := append(append([]probe.Result{}, shared...), skipped)
-	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil)
+	routes := routesByPort("api/", "api", "api:9090", probes, []int32{9090}, nil, false)
 	if len(routes) != 1 {
 		t.Fatalf("want 1 route, got %d", len(routes))
 	}
@@ -1288,9 +1288,28 @@ func TestRoutesByPort_OwnHealthyStillVerifies(t *testing.T) {
 	}
 	own := probe.Result{Layer: probe.LayerHTTP, Target: "port 80", Port: 80, OK: true, Tone: probe.ToneHealthy, Vantage: probe.VantageInCluster}
 	probes := append(append([]probe.Result{}, shared...), own)
-	routes := routesByPort("api/", "api", "api:80", probes, []int32{80}, nil)
+	routes := routesByPort("api/", "api", "api:80", probes, []int32{80}, nil, false)
 	if len(routes) != 1 || routes[0].Outcome != OutcomeVerified {
 		t.Fatalf("want a verified route from the port's own healthy probe, got %+v", routes)
+	}
+}
+
+func TestRoutesByPort_VantageSkipsMaterializeOnlyForServiceSubjects(t *testing.T) {
+	skip := probe.Skipped(
+		probe.LayerHTTP,
+		"port 6379",
+		probe.VantageLocal,
+		"non-HTTP Service port can only be tested from inside the cluster",
+	)
+	skip.Port = 6379
+	skip.SkipClass = SkipClassVantage
+
+	if got := routesByPort("entry/", "database", "database:6379", []probe.Result{skip}, []int32{6379}, nil, false); len(got) != 0 {
+		t.Fatalf("backend-only vantage skip became an intended route: %+v", got)
+	}
+	got := routesByPort("database", "database", "database:6379", []probe.Result{skip}, nil, nil, true)
+	if len(got) != 1 || got[0].Outcome != OutcomeNotTested {
+		t.Fatalf("Service-subject vantage skip = %+v, want one not-tested route", got)
 	}
 }
 
@@ -1357,6 +1376,48 @@ func TestComputeCoverage_NonHTTPServiceBuildsInClusterCandidate(t *testing.T) {
 	}
 }
 
+func TestComputeCoverage_SameNumberMultiProtocolServiceHasNoAmbiguousCandidate(t *testing.T) {
+	tcpSkip := probe.SkippedCmd(
+		probe.LayerHTTP,
+		"port 53",
+		probe.VantageLocal,
+		"Port 53 is not HTTP. Run Radar from in-cluster to verify TCP reachability.",
+		"",
+	)
+	tcpSkip.Port = 53
+	tcpSkip.SkipClass = SkipClassVantage
+	udpSkip := probe.SkippedCmd(
+		probe.LayerTCP,
+		"port 53",
+		probe.VantageLocal,
+		"port 53 is UDP - a TCP dial can't test it",
+		"",
+	)
+	udpSkip.Port = 53
+	udpSkip.SkipClass = SkipClassCoverage
+
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Namespace: "kube-system", Name: "kube-dns"},
+		Downstream: []Hop{{
+			Resource: ResourceRef{Kind: "Service", Namespace: "kube-system", Name: "kube-dns"},
+			Config: &HopConfig{Ports: []PortMap{
+				{Name: "dns-udp", Port: 53, Protocol: "UDP"},
+				{Name: "dns-tcp", Port: 53, Protocol: "TCP"},
+			}},
+			Probes: []probe.Result{udpSkip, tcpSkip},
+		}},
+	}
+
+	computeCoverage(tr)
+
+	if len(tr.Routes) != 1 {
+		t.Fatalf("Routes = %+v, want one numeric route", tr.Routes)
+	}
+	if tr.Routes[0].InClusterRequest != nil {
+		t.Fatalf("InClusterRequest = %+v, want nil because service:53 cannot identify UDP vs TCP", tr.Routes[0].InClusterRequest)
+	}
+}
+
 // Defect 4: a single-host Ingress route's label is path-only ("/api"), so
 // routeHostKey returns "" and a NotTested route both counts its own skipped
 // transport probe (under the host key) AND itself - inflating Coverage.Skipped.
@@ -1368,7 +1429,7 @@ func TestRecountCoverage_SingleHostNotTestedNoDoubleCount(t *testing.T) {
 			Route:            "/api", // path-only label (single-host Ingress)
 			Target:           "shop:80",
 			Outcome:          OutcomeNotTested,
-			InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/api"},
+			InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Host: "shop.example.com", Path: "/api"},
 		}},
 		// The route's own skipped transport probe, keyed by host in NotTested.
 		NotTested: []RouteSkip{{
@@ -1436,13 +1497,13 @@ func TestRecountCoverage_HostSkipDoesNotSwallowSiblingRoutes(t *testing.T) {
 				Route:            "/web",
 				Target:           "shop:80",
 				Outcome:          OutcomeNotTested,
-				InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/web"},
+				InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Host: "shop.example.com", Path: "/web"},
 			},
 			{
 				Route:            "/admin",
 				Target:           "shop:80",
 				Outcome:          OutcomeNotTested,
-				InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: "/admin"},
+				InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Host: "shop.example.com", Path: "/admin"},
 			},
 		},
 		NotTested: []RouteSkip{{
@@ -1611,7 +1672,7 @@ func TestRecountCoverage_SkipAbsorptionTruthTable(t *testing.T) {
 	}
 	route := func(path string) RouteResult {
 		return RouteResult{Route: path, Target: "shop:80", Outcome: OutcomeNotTested,
-			InClusterRequest: &ProbeRequest{Host: "shop.example.com", Path: path}}
+			InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Host: "shop.example.com", Path: path}}
 	}
 	cases := []struct {
 		name   string

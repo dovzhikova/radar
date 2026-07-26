@@ -19,8 +19,8 @@ export interface ReachabilityExplainerProps {
    *  shows a live "testing…" state so the work is visible IN the table, not just on
    *  the button. */
   inClusterRunning?: boolean
-  /** The HTTP request the L7 probes made (default "/"), shown in the header so the
-   *  reader knows exactly what was tested. */
+  /** The HTTP request path where applicable (default "/"), shown in the header so
+   *  the reader knows exactly what was tested. */
   probePath?: string
 }
 
@@ -76,6 +76,9 @@ interface MatrixRow {
   /** This row is an external front-door host (Ingress/Gateway/Route), not a backend.
    *  The proxy + in-cluster columns are "n/a · entry", not a blank/real result. */
   isEntry: boolean
+  /** The intended live-request protocol for this route. Absent on entry rows
+   *  that are not in-cluster probe targets. */
+  protocol?: 'http' | 'https' | 'tcp'
 }
 
 // buildMatrix turns the raw per-hop probe results into the many-paths × many-directions
@@ -95,6 +98,13 @@ function pathLabel(name: string, p: ProbeResult): string {
 function buildMatrix(trace: Trace): { dirs: Direction[]; rows: MatrixRow[] } {
   const rowMap = new Map<string, MatrixRow>()
   const seen = new Set<Direction>()
+  const routeProtocols = new Map<string, 'http' | 'https' | 'tcp'>()
+  for (const route of trace.routes ?? []) {
+    const protocol = route.inClusterRequest?.protocol
+    if (!route.target || !protocol) continue
+    const ns = route.targetNamespace || trace.subject.namespace || ''
+    routeProtocols.set(ns ? `${ns}/${route.target}` : route.target, protocol)
+  }
   // Downstream Services/ExternalName are what the in-cluster Job dials; upstream entry
   // hosts are NOT - so only downstream rows may show a "testing…" state.
   const addHop = (h: NonNullable<Trace['downstream']>[number], testable: boolean) => {
@@ -115,11 +125,19 @@ function buildMatrix(trace: Trace): { dirs: Direction[]; rows: MatrixRow[] } {
         // An entry host is never in-cluster-testable, regardless of whether it sits in
         // downstream (Ingress subject) or upstreams (Service subject) - this is also
         // what kills the "testing…" flicker on an Ingress-subject host row.
-        row = { key, label, cells: {}, inClusterTestable: testable && !entry, isEntry: entry }
+        row = {
+          key,
+          label,
+          cells: {},
+          inClusterTestable: testable && !entry,
+          isEntry: entry,
+          protocol: routeProtocols.get(key),
+        }
         rowMap.set(key, row)
       } else if (testable && !entry) {
         row.inClusterTestable = true
       }
+      if (!row.protocol) row.protocol = routeProtocols.get(key)
       // A LIVE result always beats a skipped one; among the same skip-status, the
       // higher-information layer wins. (Never let a skipped TLS hide a live TCP.)
       // On a SAME-layer tie (e.g. a Pods fan-out: multiple pods, same http layer),
@@ -318,6 +336,32 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
   const collapsible = rows.length > COLLAPSED_ROWS
   const visibleRows = collapsible && !expanded ? rows.slice(0, COLLAPSED_ROWS) : rows
   const hiddenCount = rows.length - COLLAPSED_ROWS
+  const rowProbes = (row: MatrixRow) => Object.values(row.cells).filter((probe): probe is ProbeResult => !!probe)
+  const rowMethod = (row: MatrixRow) => {
+    if (row.protocol === 'tcp') return 'TCP'
+    if (row.protocol === 'http' || row.protocol === 'https') return 'GET'
+    if (rowProbes(row).some((probe) => !probe.skipped && probe.layer === 'http')) return 'GET'
+    if (rowProbes(row).some((probe) => !probe.skipped && (probe.layer === 'tcp' || probe.layer === 'tls'))) return 'TCP'
+    return 'CHECK'
+  }
+  const hasTCPTarget = rows.some((row) => row.protocol === 'tcp')
+  const hasHTTPTarget = rows.some((row) =>
+    row.protocol === 'http' || row.protocol === 'https' ||
+    rowProbes(row).some((probe) => !probe.skipped && probe.layer === 'http'),
+  )
+  const testedHTTP = rows.some((row) => rowProbes(row).some((probe) => !probe.skipped && probe.layer === 'http'))
+  const testedTCP = rows.some((row) => rowProbes(row).some((probe) => !probe.skipped && probe.layer === 'tcp'))
+  const testedTCPRoute = rows.some((row) =>
+    row.protocol === 'tcp' && rowProbes(row).some((probe) => !probe.skipped && probe.layer === 'tcp'),
+  )
+  const requestSummary = testedHTTP && testedTCPRoute
+    ? `GET ${probePath || '/'} + TCP`
+    : testedHTTP
+      ? `GET ${probePath || '/'}`
+      : testedTCP
+      ? 'TCP connection'
+        : 'No connection ran'
+  const targetColumnLabel = hasTCPTarget && hasHTTPTarget ? 'Path / target' : hasHTTPTarget ? 'Path' : 'Target'
   return (
     <div className="overflow-hidden rounded-xl border border-theme-border bg-theme-surface">
       {/* Card header - title + scannable meta chips. */}
@@ -325,12 +369,12 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
         <span className="text-sm font-semibold text-theme-text-primary">What this test checked</span>
         <div className="flex items-center gap-1.5">
           <span className="inline-flex items-center rounded-md bg-theme-elevated px-2 py-0.5 text-xs font-medium text-theme-text-secondary">{rows.length > 1 ? `${rows.length} paths` : '1 path'}</span>
-          <span className="inline-flex items-center rounded-md bg-theme-elevated px-2 py-0.5 font-mono text-xs font-medium text-theme-text-secondary">GET {probePath || '/'}</span>
+          <span className="inline-flex items-center rounded-md bg-theme-elevated px-2 py-0.5 font-mono text-xs font-medium text-theme-text-secondary">{requestSummary}</span>
         </div>
       </div>
       {/* Column-header band - PATH + one direction per surface, each with its tooltip. */}
       <div className="grid gap-x-4 border-b border-theme-border bg-theme-base px-4 py-2" style={{ gridTemplateColumns: gridCols }}>
-        <div className={bandLabel}>Path</div>
+        <div className={bandLabel}>{targetColumnLabel}</div>
         {dirs.map((d) => (
           <div key={d} className={`${bandLabel} border-l border-theme-border pl-4`}>
             <Tooltip content={tip(DIR_HELP[d])} position="bottom">
@@ -343,7 +387,9 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
       {visibleRows.map((r) => (
         <div key={r.key} className="grid items-start gap-x-4 border-b border-theme-border px-4 py-3 last:border-b-0" style={{ gridTemplateColumns: gridCols }}>
           <div className="flex min-w-0 items-center gap-2">
-            <span className="inline-flex shrink-0 items-center rounded bg-theme-elevated px-1.5 py-0.5 font-mono text-[10px] font-bold text-theme-text-secondary">GET</span>
+            <span className="inline-flex shrink-0 items-center rounded bg-theme-elevated px-1.5 py-0.5 font-mono text-[10px] font-bold text-theme-text-secondary">
+              {rowMethod(r)}
+            </span>
             <span className="truncate font-mono text-[12px] text-theme-text-primary">{r.label}</span>
           </div>
           {dirs.map((d) => {

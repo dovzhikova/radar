@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -182,6 +184,8 @@ func stampInClusterProbes(tr *trace.Trace, tests []reachability.InClusterTestRes
 			continue
 		}
 		name := backendName(tst.Target)
+		_, portText, _ := net.SplitHostPort(tst.Target)
+		portNumber, _ := strconv.ParseInt(portText, 10, 32)
 		for hi := range tr.Downstream {
 			if tr.Downstream[hi].Resource.Name != name {
 				continue
@@ -197,6 +201,9 @@ func stampInClusterProbes(tr *trace.Trace, tests []reachability.InClusterTestRes
 			}
 			for _, pr := range tst.Results {
 				pr.Vantage = probe.VantageInCluster
+				if pr.Port == 0 && portNumber > 0 {
+					pr.Port = int32(portNumber)
+				}
 				if pr.Path == "" {
 					pr.Path = probe.PathData
 				}

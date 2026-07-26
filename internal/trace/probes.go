@@ -688,6 +688,15 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 					nonHTTPSkipReason(p.Name, p.AppProtocol, p.Port, vantage, dataReachable),
 					cmd)
 				skip.Path = probe.PathAPIServer
+				skip.Port = p.Port
+				if !dataReachable {
+					skip = classed(skip, SkipClassVantage)
+				} else {
+					// TCP is the complete automatic check for an explicitly
+					// non-HTTP route. The inapplicable HTTP proxy path is useful
+					// context, but it is not lost route coverage.
+					skip = classed(skip, SkipClassBenign)
+				}
 				out = append(out, skip)
 				continue
 			}
@@ -700,6 +709,8 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 					"HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly.",
 					portForwardCmd("svc", h.Resource.Namespace, h.Resource.Name, p.Port)+fmt.Sprintf("   # then: curl -k https://localhost:%d/", p.Port))
 				skip.Path = probe.PathAPIServer
+				skip.Port = p.Port
+				skip = classed(skip, SkipClassVantage)
 				out = append(out, skip)
 				continue
 			}
@@ -732,6 +743,8 @@ func probeService(ctx context.Context, h *Hop, vantage probe.Vantage, client kub
 			}
 			skip := probe.SkippedCmd(probe.LayerHTTP, fmt.Sprintf("port %d", p.Port), vantage, reason, cmd)
 			skip.Path = probe.PathAPIServer
+			skip.Port = p.Port
+			skip = classed(skip, SkipClassVantage)
 			out = append(out, skip)
 		}
 	}
@@ -1119,6 +1132,7 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 				skip := probe.SkippedCmd(probe.LayerHTTP, target, vantage, nonHTTPSkipReason(cp.Name, "", cp.Port, vantage, vantage == probe.VantageInCluster && len(h.Config.PodIPs) > 0),
 					portForwardCmd("pod", h.Resource.Namespace, name, cp.Port)+fmt.Sprintf("   # then connect a client for this protocol on localhost:%d", cp.Port))
 				skip.Path = probe.PathAPIServer
+				skip.Port = cp.Port
 				out = append(out, skip)
 				continue
 			}
@@ -1127,6 +1141,7 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 					"HTTPS backend - the API-server proxy speaks plain HTTP and can't verify TLS on this port. Test it directly.",
 					portForwardCmd("pod", h.Resource.Namespace, name, cp.Port)+fmt.Sprintf("   # then: curl -k https://localhost:%d/", cp.Port))
 				skip.Path = probe.PathAPIServer
+				skip.Port = cp.Port
 				out = append(out, skip)
 				continue
 			}

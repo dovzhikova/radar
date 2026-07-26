@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ResourceRef, Trace, Hop, ProbeResult, ProbeLayer, Finding } from './types'
-import { ReachActions, JustTestedNote, FindingRow, VerdictCaveat, RequestIndicator, CopyableCommand, type TracePanelProps } from './TracePanel'
+import { ReachActions, JustTestedNote, FindingRow, VerdictCaveat, RequestIndicator, CopyableCommand, type RequestMode, type TracePanelProps } from './TracePanel'
 import { reachVerdict, directLaneLabel, hostFromTarget } from './reachVerdict'
 import { ReachabilityExplainer } from './ReachabilityExplainer'
 import { TopologyGraph } from '../topology/TopologyGraph'
@@ -112,6 +112,32 @@ export function ReachabilityView(props: TracePanelProps) {
   )
 }
 
+export function completedRequestMode(trace: Trace): RequestMode {
+  const tcpTargets = new Set(
+    (trace.routes ?? [])
+      .filter((route) => route.inClusterRequest?.protocol === 'tcp' && !!route.target)
+      .map((route) => {
+        const ns = route.targetNamespace || trace.subject.namespace || ''
+        return ns ? `${ns}/${route.target}` : route.target!
+      }),
+  )
+  let testedHTTP = false
+  let testedTCP = false
+  for (const hop of [...(trace.downstream ?? []), ...(trace.upstreams ?? [])]) {
+    const ns = hop.resource?.namespace || trace.subject.namespace || ''
+    const name = hop.resource?.name || ''
+    for (const result of hop.probes ?? []) {
+      if (result.skipped) continue
+      if (result.layer === 'http') testedHTTP = true
+      if (result.layer === 'tcp' && result.port && name) {
+        const target = `${name}:${result.port}`
+        if (tcpTargets.has(ns ? `${ns}/${target}` : target)) testedTCP = true
+      }
+    }
+  }
+  return testedHTTP && testedTCP ? 'mixed' : testedHTTP ? 'http' : testedTCP ? 'tcp' : 'none'
+}
+
 function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, probed, onRunInCluster, inClusterRunning, inClusterAllowed, probePath, onApplyProbePath, runNonce, testedAt }: { trace?: Trace; onNavigate?: (ref: ResourceRef) => void; onRunProbes?: () => void; probeRequested?: boolean; probed?: boolean; onRunInCluster?: () => void; inClusterRunning?: boolean; inClusterAllowed?: boolean; probePath?: string; onApplyProbePath?: (p: string) => void; runNonce?: number; testedAt?: Date }) {
   // Track the selection by ID, not by node object - the node is re-derived from the
   // CURRENT topology each render, so when a probe (e.g. the in-cluster test) updates
@@ -138,6 +164,12 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
     return <div className="text-sm text-theme-text-tertiary p-4">No reachability data.</div>
   }
   const v = reachVerdict(trace, probed)
+  const requestProtocols = (trace.routes ?? [])
+    .map((route) => route.inClusterRequest?.protocol)
+    .filter((protocol): protocol is 'http' | 'https' | 'tcp' => protocol !== undefined)
+  const hasHTTPRequests = requestProtocols.some((protocol) => protocol === 'http' || protocol === 'https')
+  const hasTCPRequests = requestProtocols.some((protocol) => protocol === 'tcp')
+  const requestMode = completedRequestMode(trace)
   // An in-cluster test has produced results when any hop carries an in-cluster
   // probe - used to label the in-cluster button as a re-run.
   const inClusterTested = [...(trace.downstream ?? []), ...(trace.upstreams ?? [])].some((h) => (h.probes ?? []).some((p) => p.vantage === 'in-cluster'))
@@ -163,7 +195,14 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
               <JustTestedNote nonce={runNonce} />
             </div>
             <VerdictCaveat caveat={v.caveat} detail={v.detail} />
-            {probed && <RequestIndicator path={probePath} onApplyProbePath={onApplyProbePath} testedAt={testedAt} />}
+            {probed && (
+              <RequestIndicator
+                path={probePath}
+                onApplyProbePath={onApplyProbePath}
+                testedAt={testedAt}
+                requestMode={requestMode}
+              />
+            )}
           </div>
         </div>
         <ReachActions
@@ -176,6 +215,7 @@ function ReachabilityDiagram({ trace, onNavigate, onRunProbes, probeRequested, p
           inClusterTested={inClusterTested}
           probePath={probePath}
           onApplyProbePath={onApplyProbePath}
+          supportsHTTPPath={hasHTTPRequests || !hasTCPRequests}
         />
       </div>
       <ReachabilityExplainer trace={trace} probed={probed} inClusterRunning={inClusterRunning} probePath={probePath} />

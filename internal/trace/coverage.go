@@ -115,10 +115,10 @@ type RouteResult struct {
 // (not the Ingress TLS, which terminates at the front door the in-cluster dial
 // bypasses).
 type ProbeRequest struct {
-	Protocol    string `json:"protocol"`       // http | https | tcp
-	Scheme      string `json:"scheme"`         // http | https
-	Host        string `json:"host,omitempty"` // Host header / SNI (omitted when none declared)
-	Path        string `json:"path"`           // request path
+	Protocol    string `json:"protocol"`         // http | https | tcp
+	Scheme      string `json:"scheme,omitempty"` // http | https; HTTP(S) only
+	Host        string `json:"host,omitempty"`   // Host header / SNI (omitted when none declared)
+	Path        string `json:"path,omitempty"`   // HTTP request path
 	PathGuessed bool   `json:"pathGuessed,omitempty"`
 }
 
@@ -303,6 +303,7 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		return
 	}
 	folded := false
+	foldedRoutes := map[int]bool{}
 	for i := range t.Routes {
 		if t.Routes[i].Benign {
 			continue
@@ -321,19 +322,22 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		rr.TargetNamespace = t.Routes[i].TargetNamespace
 		t.Routes[i] = rr
 		folded = true
+		foldedRoutes[i] = true
 	}
 	if !folded {
 		return
 	}
-	// A route that was only DNS-resolvable from the laptop/proxy vantage carries a
-	// SkipClassVantage "run radar in-cluster" row in NotTested. When the live pass
-	// just upgraded that same route to a real reach/verify, that advice is stale and
-	// contradictory (the user already ran in-cluster and it passed), and recountCoverage
-	// would count the route as Passed AND its same-host skip row as Skipped. Drop the
-	// vantage rows the live pass resolved before recounting.
+	// A live result makes the earlier same-route vantage gap stale. Service proxy
+	// limitations are port-scoped because their skip target is "port N", while the
+	// route target is "service:N". Only vantage skips may be removed this way:
+	// UDP/SCTP coverage gaps can share a number with TCP and remain unresolved by
+	// a successful TCP result.
 	resolvedHosts := map[string]bool{}
 	resolvedPorts := map[string]bool{}
 	for i := range t.Routes {
+		if !foldedRoutes[i] {
+			continue
+		}
 		r := t.Routes[i]
 		if r.Confidence != ConfidenceReal {
 			continue
@@ -353,8 +357,12 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	if len(resolvedHosts) > 0 || len(resolvedPorts) > 0 {
 		kept := t.NotTested[:0]
 		for _, s := range t.NotTested {
+			if t.Subject.Kind == "Service" && s.ReasonClass == SkipClassVantage &&
+				resolvedPorts[portKey(s.Route)] {
+				continue
+			}
 			if s.ReasonClass == SkipClassVantage &&
-				(resolvedHosts[routeHostKey(s.Route)] || resolvedPorts[portKey(s.Route)]) {
+				resolvedHosts[routeHostKey(s.Route)] {
 				continue
 			}
 			kept = append(kept, s)
@@ -1086,7 +1094,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 		// intended-route test, one route per Service port; the Pods-hop probes sit
 		// behind the Service, so they're localization, never a separate route.
 		podLoc := factsFromProbes(downstreamProbes(t.Downstream[1:]))
-		routes := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, podLoc)
+		routes := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, podLoc, true)
 		setTargetNamespace(routes, entry.Resource.Namespace)
 		markBenignScaleZero(routes, entry)
 		attachInClusterRequest(routes, "", "", entry.Config)
@@ -1164,7 +1172,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 			}
 			shared := entryProbesForHost(entry, scopeHost)
 			outcomeProbes := append(append([]probe.Result{}, shared...), backend.Probes...)
-			routes := routesByPort(rr.label, backend.Resource.Name, target, outcomeProbes, rr.ports, podLoc)
+			routes := routesByPort(rr.label, backend.Resource.Name, target, outcomeProbes, rr.ports, podLoc, false)
 			if len(routes) > 0 {
 				setTargetNamespace(routes, backend.Resource.Namespace)
 				markBenignScaleZero(routes, backend)
@@ -1182,7 +1190,7 @@ func buildRoutes(t *Trace) ([]RouteResult, []RouteSkip) {
 	// entry path). Surface the Gateway's OWN front-door reachability as the route
 	// so its probe evidence isn't dropped and coverage doesn't read empty.
 	if entry.Resource.Kind == "Gateway" && len(out) == 0 {
-		gw := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, nil)
+		gw := routesByPort(subjectRouteLabel(t.Subject, entry), entry.Resource.Name, subjectTarget(entry), entry.Probes, nil, nil, false)
 		setTargetNamespace(gw, entry.Resource.Namespace)
 		out = append(out, gw...)
 	}
@@ -1235,7 +1243,7 @@ func hopsHaveScaleZero(hops []Hop) bool {
 // empty scope means every probed port is an intended route (a Service subject's
 // own ports). fallbackTarget labels the host-level route when no per-port probe
 // ran. extraLoc (the behind-the-gate pod facts) is appended to every route.
-func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Result, scope []int32, extraLoc []ProbeFact) []RouteResult {
+func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Result, scope []int32, extraLoc []ProbeFact, materializeVantageSkips bool) []RouteResult {
 	inScope := func(port int32) bool {
 		if len(scope) == 0 {
 			return true
@@ -1268,6 +1276,16 @@ func routesByPort(routeID, backendName, fallbackTarget string, probes []probe.Re
 	emit := func(rid, target string, ps []probe.Result) (RouteResult, bool) {
 		r, ok := routeFromProbes(rid, target, ps)
 		if !ok {
+			if materializeVantageSkips {
+				for _, p := range ps {
+					if p.Skipped && skipClassOf(p) == SkipClassVantage {
+						return RouteResult{
+							Route: rid, Target: target, Outcome: OutcomeNotTested,
+							Evidence: p.Reason, Command: p.Command,
+						}, true
+					}
+				}
+			}
 			return r, false
 		}
 		r.Localization = dedupeFacts(append(r.Localization, extraLoc...))
@@ -1524,13 +1542,8 @@ func isNameByte(b byte) bool {
 func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult, bool) {
 	var real, indirect []probe.Result
 	var localization []ProbeFact
-	var vantageSkip *probe.Result
 	for _, p := range probes {
 		if p.Skipped {
-			if vantageSkip == nil && skipClassOf(p) == SkipClassVantage {
-				copy := p
-				vantageSkip = &copy
-			}
 			continue
 		}
 		if p.Path == probe.PathAPIServer {
@@ -1543,12 +1556,6 @@ func routeFromProbes(routeID, target string, probes []probe.Result) (RouteResult
 		}
 	}
 	if len(real) == 0 && len(indirect) == 0 {
-		if vantageSkip != nil {
-			return RouteResult{
-				Route: routeID, Target: target, Outcome: OutcomeNotTested,
-				Evidence: vantageSkip.Reason, Command: vantageSkip.Command,
-			}, true
-		}
 		return RouteResult{}, false
 	}
 	r := RouteResult{Route: routeID, Target: target, Localization: localization}
@@ -1853,7 +1860,11 @@ func mergePorts(existing, add []int32) []int32 {
 // the route Target so multi-port routes each get their own protocol).
 func attachInClusterRequest(routes []RouteResult, host, path string, cfg *HopConfig) {
 	for i := range routes {
-		req := guessInClusterRequest(host, path, portFromTarget(routes[i].Target, cfg))
+		port, ok := portFromTarget(routes[i].Target, cfg)
+		if !ok {
+			continue
+		}
+		req := guessInClusterRequest(host, path, port)
 		if req.Protocol == "" {
 			continue
 		}
@@ -1866,12 +1877,13 @@ func attachInClusterRequest(routes []RouteResult, host, path string, cfg *HopCon
 // guesses the leading literal and flags PathGuessed - the UI surfaces that and
 // lets the user correct it before running.
 func guessInClusterRequest(host, path string, port PortMap) ProbeRequest {
-	req := ProbeRequest{
-		Protocol: protocolForPort(port),
-		Scheme:   schemeForPort(port),
-		Host:     concreteHost(host),
+	protocol := protocolForPort(port)
+	req := ProbeRequest{Protocol: protocol}
+	if protocol == "http" || protocol == "https" {
+		req.Scheme = protocol
+		req.Host = concreteHost(host)
+		req.Path, req.PathGuessed = guessConcretePath(path)
 	}
-	req.Path, req.PathGuessed = guessConcretePath(path)
 	return req
 }
 
@@ -1984,10 +1996,11 @@ func ensureLeadingSlash(p string) string {
 	return p
 }
 
-// portFromTarget parses the "name:port" route Target and returns the matching
-// Service PortMap (for its scheme hints); a bare PortMap with just the number
-// when the config doesn't carry it.
-func portFromTarget(target string, cfg *HopConfig) PortMap {
+// portFromTarget parses the "name:port" route Target and returns its unique
+// Service PortMap. A numeric target cannot distinguish two Service ports that
+// share a number but use different protocols, so that shape fails closed rather
+// than attaching a potentially false TCP/HTTP request.
+func portFromTarget(target string, cfg *HopConfig) (PortMap, bool) {
 	num := int32(0)
 	if i := strings.LastIndexByte(target, ':'); i >= 0 {
 		if n, err := strconv.ParseInt(target[i+1:], 10, 32); err == nil {
@@ -1995,13 +2008,22 @@ func portFromTarget(target string, cfg *HopConfig) PortMap {
 		}
 	}
 	if cfg != nil {
+		var match PortMap
+		found := false
 		for _, p := range cfg.Ports {
 			if p.Port == num {
-				return p
+				if found {
+					return PortMap{}, false
+				}
+				match = p
+				found = true
 			}
 		}
+		if found {
+			return match, true
+		}
 	}
-	return PortMap{Port: num}
+	return PortMap{Port: num}, num != 0
 }
 
 // backendRefMatches reports whether a route BackendRef points at the given

@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/skyhook-io/radar/pkg/probe"
@@ -89,6 +90,25 @@ func TestConcreteHost(t *testing.T) {
 	}
 	if got := concreteHost(""); got != "" {
 		t.Errorf("empty host = %q, want empty", got)
+	}
+}
+
+func TestGuessInClusterRequest_TCPHasNoHTTPFields(t *testing.T) {
+	req := guessInClusterRequest("database.example.com", "/healthz", PortMap{
+		Name: "valkey", Port: 6379, Protocol: "TCP",
+	})
+	if req.Protocol != "tcp" {
+		t.Fatalf("protocol = %q, want tcp", req.Protocol)
+	}
+	if req.Scheme != "" || req.Host != "" || req.Path != "" || req.PathGuessed {
+		t.Errorf("TCP request carried HTTP-only fields: %+v", req)
+	}
+	wire, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(wire); got != `{"protocol":"tcp"}` {
+		t.Errorf("TCP wire request = %s, want protocol only", got)
 	}
 }
 

@@ -66,7 +66,7 @@ kubectl get httproute api-route -n prod -o jsonpath='{.status.parents}'
 
 ## Reachability test (active probes)
 
-The **Run test** button under the verdict fires one round of probes against the declared path:
+The **Run test** button under the verdict fires one round of applicable probes. HTTP(S) routes use their declared path; non-HTTP Service ports have no HTTP path and stop at TCP:
 
 | Hop | What runs |
 |-----|-----------|
