@@ -359,14 +359,24 @@ func TestProbeService_InClusterTCPIsCompleteNonHTTPCoverage(t *testing.T) {
 	stubProxyProbes(t)
 	tr := &Trace{
 		Subject: ResourceRef{Kind: "Service", Namespace: "ns", Name: "database"},
-		Downstream: []Hop{{
-			Resource: ResourceRef{Kind: "Service", Namespace: "ns", Name: "database"},
-			Config: &HopConfig{
-				ServiceType: "ClusterIP",
-				ClusterIP:   clusterIP,
-				Ports:       []PortMap{{Port: port, Name: "redis", Protocol: "TCP"}},
+		Downstream: []Hop{
+			{
+				Resource: ResourceRef{Kind: "Service", Namespace: "ns", Name: "database"},
+				Config: &HopConfig{
+					ServiceType: "ClusterIP",
+					ClusterIP:   clusterIP,
+					Ports:       []PortMap{{Port: port, Name: "redis", Protocol: "TCP"}},
+				},
 			},
-		}},
+			{
+				Resource: ResourceRef{Kind: "Pods", Namespace: "ns"},
+				Config: &HopConfig{
+					ContainerPorts: []ContainerPortRef{{Container: "database", Port: port, Name: "redis", Protocol: "TCP"}},
+					PodIPs:         []string{clusterIP},
+					PodNames:       []string{"database-0"},
+				},
+			},
+		},
 	}
 
 	runProbes(context.Background(), tr, Options{Probe: true, ProbeBudget: 2 * time.Second}, fake.NewClientset())
@@ -386,6 +396,15 @@ func TestProbeService_InClusterTCPIsCompleteNonHTTPCoverage(t *testing.T) {
 	}
 	if !sawBenignProxySkip {
 		t.Errorf("inapplicable HTTP proxy note was not classified benign: %+v", tr.Downstream[0].Probes)
+	}
+	var sawBenignPodProxySkip bool
+	for _, p := range tr.Downstream[1].Probes {
+		if p.Skipped && p.Path == probe.PathAPIServer && p.Port == port {
+			sawBenignPodProxySkip = p.SkipClass == SkipClassBenign
+		}
+	}
+	if !sawBenignPodProxySkip {
+		t.Errorf("inapplicable pod-proxy HTTP note was not classified benign: %+v", tr.Downstream[1].Probes)
 	}
 }
 
@@ -421,6 +440,59 @@ func TestProbePods_DualPathInCluster(t *testing.T) {
 	}
 	if !sawData || !sawAPI {
 		t.Errorf("expected both PathData and PathAPIServer pod probes, got %+v", tr.Downstream[0].Probes)
+	}
+}
+
+func TestProbePodsByName_ProtocolSkipsCarryCoverageClass(t *testing.T) {
+	stubProxyProbes(t)
+	tests := []struct {
+		name      string
+		vantage   probe.Vantage
+		podIPs    []string
+		port      ContainerPortRef
+		wantClass string
+	}{
+		{
+			name: "local non-HTTP needs another vantage", vantage: probe.VantageLocal,
+			port:      ContainerPortRef{Container: "database", Port: 6379, Name: "redis", Protocol: "TCP"},
+			wantClass: SkipClassVantage,
+		},
+		{
+			name: "in-cluster non-HTTP already has direct TCP", vantage: probe.VantageInCluster,
+			podIPs:    []string{"10.244.0.10"},
+			port:      ContainerPortRef{Container: "database", Port: 6379, Name: "redis", Protocol: "TCP"},
+			wantClass: SkipClassBenign,
+		},
+		{
+			name: "in-cluster non-HTTP without Pod IP still needs another path", vantage: probe.VantageInCluster,
+			port:      ContainerPortRef{Container: "database", Port: 6379, Name: "redis", Protocol: "TCP"},
+			wantClass: SkipClassVantage,
+		},
+		{
+			name: "HTTPS still needs an application request", vantage: probe.VantageInCluster,
+			podIPs:    []string{"10.244.0.10"},
+			port:      ContainerPortRef{Container: "api", Port: 443, Name: "https", Protocol: "TCP"},
+			wantClass: SkipClassVantage,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Hop{
+				Resource: ResourceRef{Kind: "Pods", Namespace: "ns"},
+				Config: &HopConfig{
+					ContainerPorts: []ContainerPortRef{tc.port},
+					PodIPs:         tc.podIPs,
+					PodNames:       []string{"pod-x"},
+				},
+			}
+			out := probePodsByName(context.Background(), h, tc.vantage, fake.NewClientset(), "/")
+			if len(out) != 1 || !out[0].Skipped {
+				t.Fatalf("results = %+v, want one skipped proxy row", out)
+			}
+			if out[0].SkipClass != tc.wantClass {
+				t.Errorf("SkipClass = %q, want %q", out[0].SkipClass, tc.wantClass)
+			}
+		})
 	}
 }
 
@@ -1661,6 +1733,9 @@ func TestProbePodsByName_SkipsUDPAndSCTP(t *testing.T) {
 		}
 		if r.OK {
 			t.Errorf("port %d (%s): a skipped non-TCP port must not read as reached: %+v", want.port, want.proto, r)
+		}
+		if got := skipClassOf(r); got != SkipClassCoverage {
+			t.Errorf("port %d (%s): skip class = %q, want coverage", want.port, want.proto, got)
 		}
 	}
 

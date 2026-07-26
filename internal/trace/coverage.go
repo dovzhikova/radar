@@ -45,9 +45,9 @@ const VantageAPIServer = "via API server"
 // Skip reason classes. Only "coverage" + "vantage" are real coverage gaps that
 // should cap a full-green headline; "benign" loses no coverage.
 const (
-	SkipClassCoverage = "coverage" // a declared path we genuinely couldn't test (UDP/wildcard/no-SNI/non-HTTP/truncated)
-	SkipClassBenign   = "benign"   // no coverage lost (sampled identical pods, duplicate default backend)
-	SkipClassVantage  = "vantage"  // couldn't reach the front door from HERE (laptop + internal) - a gap, not an outage
+	SkipClassCoverage = "coverage" // a declared path or protocol we genuinely couldn't test
+	SkipClassBenign   = "benign"   // no coverage lost (sampling, duplicate path, or inapplicable proxy beside a direct test)
+	SkipClassVantage  = "vantage"  // this execution path couldn't run from here; a later vantage may resolve the gap
 )
 
 // Coverage counts intended routes: Tested = routes that got any non-skipped

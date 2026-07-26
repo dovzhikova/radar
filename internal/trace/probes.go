@@ -1105,6 +1105,7 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 	if len(names) > maxPodsToProbe {
 		names = names[:maxPodsToProbe]
 	}
+	dataReachable := vantage == probe.VantageInCluster && len(h.Config.PodIPs) > 0
 	var out []probe.Result
 	for _, name := range names {
 		for _, cp := range h.Config.ContainerPorts {
@@ -1129,10 +1130,15 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 				continue
 			}
 			if !isHTTPProbablePort(cp.Name, "", cp.Port) {
-				skip := probe.SkippedCmd(probe.LayerHTTP, target, vantage, nonHTTPSkipReason(cp.Name, "", cp.Port, vantage, vantage == probe.VantageInCluster && len(h.Config.PodIPs) > 0),
+				skip := probe.SkippedCmd(probe.LayerHTTP, target, vantage, nonHTTPSkipReason(cp.Name, "", cp.Port, vantage, dataReachable),
 					portForwardCmd("pod", h.Resource.Namespace, name, cp.Port)+fmt.Sprintf("   # then connect a client for this protocol on localhost:%d", cp.Port))
 				skip.Path = probe.PathAPIServer
 				skip.Port = cp.Port
+				if dataReachable {
+					skip = classed(skip, SkipClassBenign)
+				} else {
+					skip = classed(skip, SkipClassVantage)
+				}
 				out = append(out, skip)
 				continue
 			}
@@ -1142,6 +1148,7 @@ func probePodsByName(ctx context.Context, h *Hop, vantage probe.Vantage, client 
 					portForwardCmd("pod", h.Resource.Namespace, name, cp.Port)+fmt.Sprintf("   # then: curl -k https://localhost:%d/", cp.Port))
 				skip.Path = probe.PathAPIServer
 				skip.Port = cp.Port
+				skip = classed(skip, SkipClassVantage)
 				out = append(out, skip)
 				continue
 			}
