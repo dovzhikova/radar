@@ -111,8 +111,9 @@ type RouteResult struct {
 
 // ProbeRequest is a concrete request a user can run against a Service from
 // inside the cluster. Every field is derivable from the declared route; Scheme
-// comes from the BACKEND Service port (not the Ingress TLS, which terminates at
-// the front door the in-cluster dial bypasses).
+// is meaningful only for HTTP/HTTPS and comes from the BACKEND Service port
+// (not the Ingress TLS, which terminates at the front door the in-cluster dial
+// bypasses).
 type ProbeRequest struct {
 	Protocol    string `json:"protocol"`       // http | https | tcp
 	Scheme      string `json:"scheme"`         // http | https

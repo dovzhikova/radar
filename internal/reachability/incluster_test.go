@@ -159,17 +159,33 @@ func TestRunInClusterTests_ProtocolSelectsProbeLayers(t *testing.T) {
 				Route: "database", Target: "database:5432",
 				InClusterRequest: &trace.ProbeRequest{Protocol: "tcp", Scheme: "http", Path: "/"},
 			},
+			{
+				Route: "database-on-443", Target: "database:443",
+				InClusterRequest: &trace.ProbeRequest{Protocol: "tcp", Scheme: "https", Path: "/"},
+			},
 		},
 	}
 	runInClusterTests(context.Background(), fake.NewSimpleClientset(), "img:test", tr, "prod", InClusterTestOptions{})
-	if len(*calls) != 2 {
-		t.Fatalf("want 2 probe calls, got %d", len(*calls))
+	if len(*calls) != 3 {
+		t.Fatalf("want 3 probe calls, got %d", len(*calls))
 	}
 	if got := (*calls)[0].Layers; got != "tcp,http" {
 		t.Errorf("HTTP route layers = %q, want tcp,http", got)
 	}
+	if got := (*calls)[0].Scheme; got != "http" {
+		t.Errorf("HTTP route scheme = %q, want http", got)
+	}
 	if got := (*calls)[1].Layers; got != "tcp" {
 		t.Errorf("non-HTTP route layers = %q, want tcp", got)
+	}
+	if got := (*calls)[1].Scheme; got != "" {
+		t.Errorf("non-HTTP route scheme = %q, want empty", got)
+	}
+	if got := (*calls)[2].Layers; got != "tcp" {
+		t.Errorf("non-HTTP route on port 443 layers = %q, want tcp", got)
+	}
+	if got := (*calls)[2].Scheme; got != "" {
+		t.Errorf("non-HTTP route on port 443 scheme = %q, want empty so TLS cannot run", got)
 	}
 }
 

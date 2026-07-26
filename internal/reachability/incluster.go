@@ -162,7 +162,7 @@ func runInClusterTests(ctx context.Context, typed kubernetes.Interface, image st
 		}
 		opts := RunOptions{
 			Image: image, Namespace: namespace, Target: dialTarget,
-			Scheme: req.Scheme, Host: req.Host, Path: req.Path,
+			Scheme: schemeForProtocol(req.Protocol), Host: req.Host, Path: req.Path,
 			Layers: layersForProtocol(req.Protocol),
 		}
 		res := InClusterTestResult{Route: r.Route, Target: r.Target, TargetNamespace: r.TargetNamespace, Request: &req}
@@ -230,6 +230,13 @@ func layersForProtocol(protocol string) string {
 		return "tcp,http"
 	}
 	return "tcp"
+}
+
+func schemeForProtocol(protocol string) string {
+	if protocol == "http" || protocol == "https" {
+		return protocol
+	}
+	return ""
 }
 
 // runBudgetContext sizes one probe run to the REMAINING request deadline minus
