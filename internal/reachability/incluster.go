@@ -163,7 +163,7 @@ func runInClusterTests(ctx context.Context, typed kubernetes.Interface, image st
 		opts := RunOptions{
 			Image: image, Namespace: namespace, Target: dialTarget,
 			Scheme: req.Scheme, Host: req.Host, Path: req.Path,
-			Layers: "tcp,http",
+			Layers: layersForProtocol(req.Protocol),
 		}
 		res := InClusterTestResult{Route: r.Route, Target: r.Target, TargetNamespace: r.TargetNamespace, Request: &req}
 		// No impersonated client → auth/impersonation failed for EVERY route. This
@@ -223,6 +223,13 @@ func runInClusterTests(ctx context.Context, typed kubernetes.Interface, image st
 		tests = append(tests, res)
 	}
 	return tests, byTarget
+}
+
+func layersForProtocol(protocol string) string {
+	if protocol == "http" || protocol == "https" {
+		return "tcp,http"
+	}
+	return "tcp"
 }
 
 // runBudgetContext sizes one probe run to the REMAINING request deadline minus

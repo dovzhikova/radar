@@ -294,8 +294,9 @@ export interface RouteResult {
   inClusterRequest?: ProbeRequest
 }
 
-/** A concrete HTTP request the in-cluster runner can send to the Service. */
+/** A concrete request the in-cluster runner can send to the Service. */
 export interface ProbeRequest {
+  protocol: 'http' | 'https' | 'tcp'
   scheme: string
   host?: string
   path: string

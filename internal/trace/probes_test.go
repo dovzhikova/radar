@@ -372,6 +372,7 @@ func TestIsHTTPProbablePort(t *testing.T) {
 		{"name postgres", "postgres", "", 0, false},
 		{"name postgresql", "postgresql", "", 0, false},
 		{"name redis", "redis", "", 0, false},
+		{"name valkey", "valkey", "", 0, false},
 		{"name mysql", "mysql", "", 0, false},
 		{"name mongo", "mongo", "", 0, false},
 		{"name MYSQL uppercase", "MYSQL", "", 0, false},

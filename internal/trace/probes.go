@@ -765,7 +765,7 @@ func isHTTPProbablePort(name, appProtocol string, port int32) bool {
 	case "grpc", "grpc-web", "h2", "h2c",
 		"postgres", "postgresql", "pg",
 		"mysql", "mariadb",
-		"redis",
+		"redis", "valkey",
 		"mongo", "mongodb",
 		"kafka",
 		"amqp", "rabbitmq",

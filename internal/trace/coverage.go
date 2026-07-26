@@ -109,11 +109,12 @@ type RouteResult struct {
 	InClusterRequest *ProbeRequest `json:"inClusterRequest,omitempty"`
 }
 
-// ProbeRequest is a concrete HTTP request a user can run against a Service from
+// ProbeRequest is a concrete request a user can run against a Service from
 // inside the cluster. Every field is derivable from the declared route; Scheme
 // comes from the BACKEND Service port (not the Ingress TLS, which terminates at
 // the front door the in-cluster dial bypasses).
 type ProbeRequest struct {
+	Protocol    string `json:"protocol"`       // http | https | tcp
 	Scheme      string `json:"scheme"`         // http | https
 	Host        string `json:"host,omitempty"` // Host header / SNI (omitted when none declared)
 	Path        string `json:"path"`           // request path
@@ -1815,7 +1816,7 @@ func mergePorts(existing, add []int32) []int32 {
 
 // attachInClusterRequest fills each route's best-guess in-cluster request from
 // the route's declared host/path and the backend Service port (parsed back from
-// the route Target so multi-port routes each get their own scheme).
+// the route Target so multi-port routes each get their own protocol).
 func attachInClusterRequest(routes []RouteResult, host, path string, cfg *HopConfig) {
 	for i := range routes {
 		req := guessInClusterRequest(host, path, portFromTarget(routes[i].Target, cfg))
@@ -1828,9 +1829,20 @@ func attachInClusterRequest(routes []RouteResult, host, path string, cfg *HopCon
 // guesses the leading literal and flags PathGuessed - the UI surfaces that and
 // lets the user correct it before running.
 func guessInClusterRequest(host, path string, port PortMap) ProbeRequest {
-	req := ProbeRequest{Scheme: schemeForPort(port), Host: concreteHost(host)}
+	req := ProbeRequest{
+		Protocol: protocolForPort(port),
+		Scheme:   schemeForPort(port),
+		Host:     concreteHost(host),
+	}
 	req.Path, req.PathGuessed = guessConcretePath(path)
 	return req
+}
+
+func protocolForPort(port PortMap) string {
+	if !isHTTPProbablePort(port.Name, port.AppProtocol, port.Port) {
+		return "tcp"
+	}
+	return schemeForPort(port)
 }
 
 // schemeForPort reads the L7 scheme off the backend Service port: the explicit

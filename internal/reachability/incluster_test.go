@@ -147,6 +147,32 @@ func TestRunInClusterTests_DeclaredPathSanitized(t *testing.T) {
 	}
 }
 
+func TestRunInClusterTests_ProtocolSelectsProbeLayers(t *testing.T) {
+	calls := stubCleanProbe(t)
+	tr := &trace.Trace{
+		Routes: []trace.RouteResult{
+			{
+				Route: "web", Target: "web:8080",
+				InClusterRequest: &trace.ProbeRequest{Protocol: "http", Scheme: "http", Path: "/"},
+			},
+			{
+				Route: "database", Target: "database:5432",
+				InClusterRequest: &trace.ProbeRequest{Protocol: "tcp", Scheme: "http", Path: "/"},
+			},
+		},
+	}
+	runInClusterTests(context.Background(), fake.NewSimpleClientset(), "img:test", tr, "prod", InClusterTestOptions{})
+	if len(*calls) != 2 {
+		t.Fatalf("want 2 probe calls, got %d", len(*calls))
+	}
+	if got := (*calls)[0].Layers; got != "tcp,http" {
+		t.Errorf("HTTP route layers = %q, want tcp,http", got)
+	}
+	if got := (*calls)[1].Layers; got != "tcp" {
+		t.Errorf("non-HTTP route layers = %q, want tcp", got)
+	}
+}
+
 // stubCleanProbe replaces the per-route probe with a canned CLEAN result (no
 // probe pod, no cluster), restoring the real runner on cleanup. Returns the
 // recorded per-route RunOptions so tests can assert what would have been dialed.
