@@ -110,6 +110,8 @@ describe('protocol-honest probe copy', () => {
     expect(indicator).toContain('no application request completed')
     const explainer = renderToStaticMarkup(createElement(ReachabilityExplainer, { trace, probed: true }))
     expect(explainer).toContain('TCP connection')
+    expect(explainer).toContain('>TCP<')
+    expect(explainer).not.toContain('>GET<')
   })
 })
 

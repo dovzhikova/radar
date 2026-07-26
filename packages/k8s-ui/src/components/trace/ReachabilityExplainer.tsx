@@ -338,10 +338,10 @@ export function ReachabilityExplainer({ trace, probed, inClusterRunning, probePa
   const hiddenCount = rows.length - COLLAPSED_ROWS
   const rowProbes = (row: MatrixRow) => Object.values(row.cells).filter((probe): probe is ProbeResult => !!probe)
   const rowMethod = (row: MatrixRow) => {
-    if (row.protocol === 'tcp') return 'TCP'
-    if (row.protocol === 'http' || row.protocol === 'https') return 'GET'
     if (rowProbes(row).some((probe) => !probe.skipped && probe.layer === 'http')) return 'GET'
     if (rowProbes(row).some((probe) => !probe.skipped && (probe.layer === 'tcp' || probe.layer === 'tls'))) return 'TCP'
+    if (row.protocol === 'tcp') return 'TCP'
+    if (row.protocol === 'http' || row.protocol === 'https') return 'GET'
     return 'CHECK'
   }
   const hasTCPTarget = rows.some((row) => row.protocol === 'tcp')
