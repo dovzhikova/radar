@@ -148,6 +148,7 @@ func computeCoverage(t *Trace) {
 	t.Routes = routes
 	upgradeDefinitiveBackendDown(t)
 	t.NotTested = append(buildNotTested(t), unprobed...)
+	markBenignServiceSkips(t)
 
 	// A static-only trace (no probing) leaves Coverage nil; the headline below
 	// still resolves ("Configuration only - not yet tested").
@@ -1205,17 +1206,43 @@ func setTargetNamespace(routes []RouteResult, namespace string) {
 	}
 }
 
-// markBenignScaleZero flags an unreachable route as benign when a contributing
-// hop carries the intentional-scale-to-0 finding - deliberate dormancy, not an
-// outage. The Outcome stays unreachable (factually true); only the framing softens.
+// markBenignScaleZero normalizes an unreachable or vantage-only route when a
+// contributing hop carries the intentional-scale-to-0 finding. The backend is
+// authoritatively absent by design, so a not-tested transport candidate is also
+// factually unreachable and must not become a runnable incident probe.
 func markBenignScaleZero(routes []RouteResult, hops ...Hop) {
 	if !hopsHaveScaleZero(hops) {
 		return
 	}
 	for i := range routes {
-		if routes[i].Outcome == OutcomeUnreachable {
+		if routes[i].Outcome == OutcomeUnreachable || routes[i].Outcome == OutcomeNotTested {
+			routes[i].Outcome = OutcomeUnreachable
 			routes[i].Benign = true
 			routes[i].Evidence = "no running backends (scaled to 0)"
+		}
+	}
+}
+
+// markBenignServiceSkips keeps the raw per-hop skip rows aligned with a Service
+// route already proven dormant by scale-to-zero. Port scoping is load-bearing:
+// an unrelated untested port must remain a real coverage gap.
+func markBenignServiceSkips(t *Trace) {
+	if t.Subject.Kind != "Service" {
+		return
+	}
+	benignPorts := map[string]bool{}
+	for _, r := range t.Routes {
+		if r.Benign {
+			if port := portKey(r.Target); port != "" {
+				benignPorts[port] = true
+			}
+		}
+	}
+	for i := range t.NotTested {
+		if benignPorts[portKey(t.NotTested[i].Route)] {
+			t.NotTested[i].ReasonClass = SkipClassBenign
+			t.NotTested[i].Reason = "protocol reachability was not tested because the Service has no running backends (scaled to 0)"
+			t.NotTested[i].Command = ""
 		}
 	}
 }

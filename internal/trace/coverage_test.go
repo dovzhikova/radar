@@ -816,6 +816,82 @@ func TestComputeCoverage_ScaledToZeroIsBenign(t *testing.T) {
 	}
 }
 
+func TestComputeCoverage_ScaledToZeroNonHTTPCandidateIsBenign(t *testing.T) {
+	skip := probe.SkippedCmd(
+		probe.LayerHTTP,
+		"port 6379",
+		probe.VantageLocal,
+		"Port named \"redis\" looks non-HTTP. Run Radar from in-cluster to verify TCP reachability.",
+		"kubectl port-forward svc/sleeper 6379:6379",
+	)
+	skip.Port = 6379
+	skip.SkipClass = SkipClassVantage
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Namespace: "prod", Name: "sleeper"},
+		Verdict: VerdictBroken,
+		Downstream: []Hop{{
+			Resource: ResourceRef{Kind: "Service", Namespace: "prod", Name: "sleeper"},
+			Config:   &HopConfig{Ports: []PortMap{{Port: 6379, Name: "redis", Protocol: "TCP"}}},
+			Findings: []Finding{{
+				Code: k8s.ScaledToZeroFingerprint, Severity: SeverityWarning,
+				Message: "Backing workload scaled to 0",
+			}},
+			Probes: []probe.Result{skip},
+		}},
+	}
+
+	computeCoverage(tr)
+
+	if len(tr.Routes) != 1 {
+		t.Fatalf("Routes = %+v, want one dormant Service-port route", tr.Routes)
+	}
+	route := tr.Routes[0]
+	if route.Outcome != OutcomeUnreachable || !route.Benign {
+		t.Fatalf("route = %+v, want benign unreachable scale-to-zero framing", route)
+	}
+	if tr.Coverage == nil || tr.Coverage.Failed != 1 || tr.Coverage.Skipped != 0 {
+		t.Fatalf("Coverage = %+v, want failed=1 skipped=0 for intentional dormancy", tr.Coverage)
+	}
+	if len(tr.NotTested) != 1 || tr.NotTested[0].ReasonClass != SkipClassBenign {
+		t.Fatalf("NotTested = %+v, want the matching port skip retained as benign context", tr.NotTested)
+	}
+	if tr.NotTested[0].Command != "" || strings.Contains(strings.ToLower(tr.NotTested[0].Reason), "run radar") {
+		t.Fatalf("NotTested = %+v, dormant Service must not recommend a probe that cannot work", tr.NotTested)
+	}
+	if !strings.Contains(tr.NotTested[0].Reason, "no running backends") {
+		t.Fatalf("NotTested reason = %q, want dormant-context explanation", tr.NotTested[0].Reason)
+	}
+	if !strings.Contains(tr.Headline, "scaled to 0") {
+		t.Fatalf("Headline = %q, want intentional scale-to-zero framing", tr.Headline)
+	}
+}
+
+func TestMarkBenignServiceSkips_LeavesOtherPortGap(t *testing.T) {
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Service", Name: "mixed"},
+		Routes: []RouteResult{
+			{Target: "mixed:6379", Outcome: OutcomeUnreachable, Benign: true},
+			{Target: "mixed:8080", Outcome: OutcomeNotTested},
+		},
+		NotTested: []RouteSkip{
+			{Route: "port 6379", Reason: "run Radar in-cluster", ReasonClass: SkipClassVantage, Command: "kubectl port-forward svc/mixed 6379:6379"},
+			{Route: "port 8080", Reason: "budget exhausted", ReasonClass: SkipClassCoverage, Command: "curl localhost:8080"},
+		},
+	}
+
+	markBenignServiceSkips(tr)
+
+	if tr.NotTested[0].ReasonClass != SkipClassBenign {
+		t.Errorf("dormant port class = %q, want benign", tr.NotTested[0].ReasonClass)
+	}
+	if tr.NotTested[1].ReasonClass != SkipClassCoverage {
+		t.Errorf("unrelated port class = %q, want coverage preserved", tr.NotTested[1].ReasonClass)
+	}
+	if tr.NotTested[1].Reason != "budget exhausted" || tr.NotTested[1].Command != "curl localhost:8080" {
+		t.Errorf("unrelated port was rewritten: %+v", tr.NotTested[1])
+	}
+}
+
 // A Service at replicas>0 with 0 ready (crashloop) is a REAL break - no scale-0
 // finding → not benign, verdict stays broken/red.
 func TestComputeCoverage_CrashloopStaysRed(t *testing.T) {
