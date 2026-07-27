@@ -29,6 +29,7 @@ import { RecentList } from "./Home";
 import { ConsentCard } from "./parts";
 import { buildLaunchCommand, launchAgentLabel, openInTerminal } from "./launch";
 import { type RunSummary, type ExecutionProfile } from "../../api/diagnose";
+import { routePath } from "../../api/config";
 
 function capWord(s: string): string {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
@@ -65,7 +66,7 @@ function InvestigationMenu({ run }: { run: RunSummary }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const label = launchAgentLabel(run);
-  const command = buildLaunchCommand(run, `${window.location.origin}/mcp`);
+  const command = buildLaunchCommand(run, `${window.location.origin}${routePath('/mcp')}`);
   // No resumable session yet (or stale run) → nothing to hand off.
   if (!command) return null;
 
