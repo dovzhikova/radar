@@ -93,6 +93,15 @@ type Capabilities struct {
 	Username       string                   `json:"username,omitempty"`    // Authenticated username (when auth enabled)
 	Resources      *ResourcePermissions     `json:"resources,omitempty"`   // Per-resource-type permissions
 	Visibility     *VisibilitySummary       `json:"visibility,omitempty"`  // Present when resource visibility is limited enough to make diagnostics incomplete
+	CloudConnect   *CloudConnectCapability  `json:"cloudConnect,omitempty"`
+}
+
+// CloudConnectCapability tells the frontend which Cloud-connect lane this
+// deployment gets: "driver" (the in-product connect flow can run here) or
+// "wizard" (route to the Hub's connect wizard at AppURL instead).
+type CloudConnectCapability struct {
+	Lane   string `json:"lane"`
+	AppURL string `json:"appUrl"`
 }
 
 type FeatureCapabilities struct {
