@@ -4616,6 +4616,10 @@ func (s *Server) handleApplyPrometheusURL(w http.ResponseWriter, r *http.Request
 // handleDebugEvents returns event pipeline metrics and recent drops
 func (s *Server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 	response := timeline.GetDebugEventsResponse()
+	// Drop records name resources; show only those from the active cluster so a
+	// previously-connected cluster's names (a straggler drop recorded in the
+	// async informer-shutdown window after a switch) never surface here.
+	response.RecentDrops = timeline.DropsForCluster(response.RecentDrops, k8s.ActiveClusterContext())
 	s.writeJSON(w, response)
 }
 
@@ -4630,7 +4634,9 @@ func (s *Server) handleDebugEventsDiagnose(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	response := timeline.GetDiagnosis(kind, namespace, name)
+	// Pass the active cluster so DropHistory + its recommendations exclude a
+	// previously-connected cluster's straggler drops (see GetDiagnosis).
+	response := timeline.GetDiagnosis(kind, namespace, name, k8s.ActiveClusterContext())
 	s.writeJSON(w, response)
 }
 

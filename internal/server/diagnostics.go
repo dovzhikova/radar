@@ -115,11 +115,11 @@ type DiagTimeline struct {
 	Degraded       bool   `json:"degraded,omitempty"`
 	DegradedReason string `json:"degradedReason,omitempty"`
 	TotalEvents    int64  `json:"totalEvents"`
-	OldestEvent  string `json:"oldestEvent,omitempty"`
-	NewestEvent  string `json:"newestEvent,omitempty"`
-	StorageBytes int64  `json:"storageBytes,omitempty"`
-	StoreErrors  int64  `json:"storeErrors"`
-	TotalDrops   int64  `json:"totalDrops"`
+	OldestEvent    string `json:"oldestEvent,omitempty"`
+	NewestEvent    string `json:"newestEvent,omitempty"`
+	StorageBytes   int64  `json:"storageBytes,omitempty"`
+	StoreErrors    int64  `json:"storeErrors"`
+	TotalDrops     int64  `json:"totalDrops"`
 
 	// SQLite-only retention/cleanup state.
 	RetentionAge       string `json:"retentionAge,omitempty"`
@@ -340,10 +340,11 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		}
 		snapshot := metrics.GetSnapshot()
 		snap.EventPipeline = &DiagEventPipeline{
-			Received:    snapshot.Counters.Received,
-			Dropped:     snapshot.Counters.Dropped,
-			Recorded:    snapshot.Counters.Recorded,
-			RecentDrops: snapshot.RecentDrops,
+			Received: snapshot.Counters.Received,
+			Dropped:  snapshot.Counters.Dropped,
+			Recorded: snapshot.Counters.Recorded,
+			// Scope drop records to the active cluster (see handleDebugEvents).
+			RecentDrops: timeline.DropsForCluster(snapshot.RecentDrops, k8s.ActiveClusterContext()),
 			Uptime:      snapshot.Uptime,
 		}
 	})
