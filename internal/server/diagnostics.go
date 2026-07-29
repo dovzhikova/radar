@@ -115,11 +115,11 @@ type DiagTimeline struct {
 	Degraded       bool   `json:"degraded,omitempty"`
 	DegradedReason string `json:"degradedReason,omitempty"`
 	TotalEvents    int64  `json:"totalEvents"`
-	OldestEvent  string `json:"oldestEvent,omitempty"`
-	NewestEvent  string `json:"newestEvent,omitempty"`
-	StorageBytes int64  `json:"storageBytes,omitempty"`
-	StoreErrors  int64  `json:"storeErrors"`
-	TotalDrops   int64  `json:"totalDrops"`
+	OldestEvent    string `json:"oldestEvent,omitempty"`
+	NewestEvent    string `json:"newestEvent,omitempty"`
+	StorageBytes   int64  `json:"storageBytes,omitempty"`
+	StoreErrors    int64  `json:"storeErrors"`
+	TotalDrops     int64  `json:"totalDrops"`
 
 	// SQLite-only retention/cleanup state.
 	RetentionAge       string `json:"retentionAge,omitempty"`
