@@ -1269,6 +1269,7 @@ export function startCloudInstall(body: {
   clusterName: string
   acceptAdoption?: boolean
   acknowledgeIncompleteDiscovery?: boolean
+  acknowledgeSharedListener?: boolean
 }): Promise<CloudInstallStatus> {
   return fetchJSON('/cloud/install/start', {
     method: 'POST',
