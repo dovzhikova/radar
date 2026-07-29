@@ -1164,6 +1164,7 @@ export interface CloudInstallPlanSummary {
   preservedImageRepository?: string
   uncertainty?: string
   advisories?: string[]
+  sharedListener?: boolean
 }
 
 export interface CloudInstallConnected {
